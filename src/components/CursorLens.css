@@ -1,0 +1,22 @@
+.cursor-lens {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 150px;
+  height: 150px;
+  margin: -75px 0 0 -75px; /* center on the cursor point */
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 5;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  background: radial-gradient(
+    circle,
+    transparent 46%,
+    rgba(150, 210, 255, 0.1) 58%,
+    rgba(150, 210, 255, 0.04) 66%,
+    transparent 74%
+  );
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+}

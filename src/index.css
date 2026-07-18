@@ -1,0 +1,49 @@
+:root {
+  /* SF console theme */
+  --bg: #000104;
+  --panel-bg: rgba(6, 12, 20, 0.72);
+  --panel-border: rgba(64, 224, 255, 0.28);
+  --text: #9fb3c8;
+  --text-dim: #5c7286;
+  --accent: #40e0ff;
+  --accent-soft: rgba(64, 224, 255, 0.12);
+  --amber: #ffb454;
+  --warn: #ff5a5a;
+
+  --mono: ui-monospace, 'SFMono-Regular', 'Cascadia Code', Consolas,
+    'Roboto Mono', monospace;
+
+  color-scheme: dark;
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--bg);
+}
+
+#root {
+  position: relative;
+  overflow: hidden;
+}

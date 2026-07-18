@@ -1,0 +1,138 @@
+import { useRef, useState } from 'react'
+import { extractVideoId } from '../audio/youtube'
+
+export type IntroSource =
+  | { mode: 'youtube'; videoId: string }
+  | { mode: 'file'; file: File }
+  | { mode: 'demo' }
+
+interface IntroPanelProps {
+  onEnter: (source: IntroSource) => void
+}
+
+export function IntroPanel({ onEnter }: IntroPanelProps) {
+  const [url, setUrl] = useState('')
+  const [file, setFile] = useState<File | null>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const acceptFile = (candidate: File | undefined | null) => {
+    if (!candidate) return
+
+    const isAudio =
+      candidate.type.startsWith('audio/') || /\.mp3$/i.test(candidate.name)
+
+    if (!isAudio) {
+      setError('오디오 파일 또는 MP3 파일만 사용할 수 있습니다.')
+      return
+    }
+
+    setError(null)
+    setFile(candidate)
+  }
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    setDragActive(false)
+    acceptFile(event.dataTransfer.files?.[0])
+  }
+
+  const handleEnter = () => {
+    if (url.trim()) {
+      const videoId = extractVideoId(url)
+      if (!videoId) {
+        setError('유효한 YouTube 주소가 아닙니다.')
+        return
+      }
+      onEnter({ mode: 'youtube', videoId })
+      return
+    }
+
+    if (file) {
+      onEnter({ mode: 'file', file })
+      return
+    }
+
+    onEnter({ mode: 'demo' })
+  }
+
+  return (
+    <div className="intro">
+      {/* Hero title — the screen's subject, dissolving into space. */}
+      <div className="intro-hero">
+        <h1 className="intro-title" data-text="EVENT HORIZON">
+          EVENT HORIZON
+        </h1>
+        <p className="intro-warning">
+          <span className="warn-dot" />
+          우주선 오디오 시스템 동기화 필요
+        </p>
+      </div>
+
+      {/* Slim entry console at the bottom — inputs kept, but understated. */}
+      <div className="intro-console">
+        <div className="intro-tag">// DEEP-SPACE PROBE · SIGNAL LINK</div>
+
+        <div className="intro-controls">
+          <div className="intro-field">
+            <label htmlFor="yt-url">외부 음원 · YOUTUBE URL</label>
+            <input
+              id="yt-url"
+              type="text"
+              inputMode="url"
+              placeholder="https://www.youtube.com/watch?v=..."
+              value={url}
+              onChange={(event) => {
+                setUrl(event.target.value)
+                setError(null)
+              }}
+            />
+          </div>
+
+          <div className="intro-field">
+            <label>로컬 음원 · MP3</label>
+            <div
+              className={`dropzone${dragActive ? ' drag' : ''}${file ? ' has-file' : ''}`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(event) => {
+                event.preventDefault()
+                setDragActive(true)
+              }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={handleDrop}
+            >
+              {file ? (
+                <span className="drop-file">선택됨 · {file.name}</span>
+              ) : (
+                <span className="drop-hint">파일 드롭 · 클릭 선택</span>
+              )}
+            </div>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="audio/*,.mp3"
+              hidden
+              onChange={(event) => acceptFile(event.target.files?.[0])}
+            />
+          </div>
+        </div>
+
+        <div className="intro-actions">
+          <button
+            type="button"
+            className="demo-link"
+            onClick={() => onEnter({ mode: 'demo' })}
+          >
+            기본 데모 음원으로 시작하기
+          </button>
+          <button type="button" className="enter-btn" onClick={handleEnter}>
+            [ 진입 ]
+          </button>
+        </div>
+
+        {error && <p className="intro-error">{error}</p>}
+      </div>
+    </div>
+  )
+}
