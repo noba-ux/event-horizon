@@ -21,20 +21,36 @@ function formatDuration(totalSeconds: number): string {
   return clock
 }
 
-const GLITCH_CHARS = '0123456789:#%&/\\'
+// CRT signal-noise corruption. Single-symbol glyphs drive per-character flips;
+// whole-token error words occasionally blow a field out entirely. The display
+// degrades from the odd flicker (far away) to a data-storm of error codes at the
+// horizon — the intensity `gi` is driven by the fall distance (see the loop).
+const GLYPHS = '?%#_&/\\<>*=+·:0123456789ABCDEF'
+const ERR_WORDS = [
+  'ERROR', '0x4F', '0xDEAD', '#ERR#', 'N/A', 'NULL', '??%??', '0xFF', 'SIG?', 'LOST', '////',
+]
 
-/** Randomly corrupts a few characters — used only late-game. */
-function glitchText(s: string, amount: number): string {
+/** Per-character random corruption; `gi` (0→1) scales how much is eaten. */
+function corrupt(base: string, gi: number): string {
+  if (gi <= 0) return base
+  // Occasionally replace the whole field with an error token (likelier late).
+  if (base.length > 1 && Math.random() < gi * 0.14) {
+    return ERR_WORDS[(Math.random() * ERR_WORDS.length) | 0]
+  }
   let out = ''
-  for (const ch of s) {
-    if (ch !== ' ' && Math.random() < amount * 0.4) {
-      out += GLITCH_CHARS[(Math.random() * GLITCH_CHARS.length) | 0]
+  for (const ch of base) {
+    if (ch !== ' ' && Math.random() < gi * 0.9) {
+      out += GLYPHS[(Math.random() * GLYPHS.length) | 0]
     } else {
       out += ch
     }
   }
   return out
 }
+
+// Re-roll the corruption on this cadence (ms) → a trembling flicker rather than
+// an unreadable per-frame blur.
+const GLITCH_INTERVAL = 75
 
 /**
  * Bottom spaceship dashboard. Reads the shared telemetry ref in its own rAF
@@ -59,6 +75,25 @@ export function HUD({ telemetry, active }: HUDProps) {
     const ctx = canvas?.getContext('2d') ?? null
     let raf = 0
 
+    // Capture the static labels once so they can be corrupted too (the whole
+    // CRT panel — not just the values — dissolves into noise at the horizon).
+    const rootEl = rootRef.current
+    const labelEls = rootEl
+      ? Array.from(
+          rootEl.querySelectorAll<HTMLElement>(
+            '.hud-cell-label, .clock-name, .gauge-name, .clock-note',
+          ),
+        )
+      : []
+    const labelBase = labelEls.map((el) => el.textContent ?? '')
+    // Last-corrupted output, refreshed on GLITCH_INTERVAL so the flicker trembles
+    // instead of re-randomising every single frame.
+    const store = {
+      earth: '', ship: '', dist: '', prox: '', signal: '', sync: '',
+      labels: labelBase.slice(),
+    }
+    let lastGlitch = 0
+
     const draw = () => {
       const tel = telemetry.current
       const paused = tel.simulationPaused // hold the HUD steady while paused
@@ -73,9 +108,16 @@ export function HUD({ telemetry, active }: HUDProps) {
       let g = Math.max(base, Math.max(0, d - 0.3) * 0.3)
       g = Math.min(1, g) * calm
 
-      // Sync-lock readout.
+      // CRT corruption intensity. Light before the 60s mark (fallProgress 0.5) —
+      // just the odd flicker — then EXPONENTIAL after, so the panel is buried in
+      // error codes by the finale. Frozen (0) while the sim is paused.
+      const late = Math.max(0, (tel.fallProgress - 0.5) / 0.5)
+      const gi = paused
+        ? 0
+        : Math.min(1, 0.045 + Math.pow(late, 2.2) * 1.4 + absorb * 1.6)
+
+      // Sync-lock readout (class only — the text is corrupted from the store).
       if (syncRef.current) {
-        syncRef.current.textContent = synced ? 'LOCKED' : 'SEEKING'
         syncRef.current.className = `gauge-value sync ${synced ? 'locked' : 'seeking'}`
       }
 
@@ -97,13 +139,12 @@ export function HUD({ telemetry, active }: HUDProps) {
           root.style.opacity = (
             1 - (Math.random() < g * 0.25 ? Math.random() * 0.4 : 0)
           ).toFixed(3)
-          root.style.setProperty('--glitch', g.toFixed(3))
+          root.style.setProperty('--glitch', Math.max(g, gi).toFixed(3))
         } else {
-          // No collapse — but a stage pulse gives a brief shake (no red glitch).
-          if (root.classList.contains('critical')) {
-            root.classList.remove('critical')
-            root.style.setProperty('--glitch', '0')
-          }
+          // No collapse — but a stage pulse gives a brief shake. The scan-noise
+          // overlay still tracks the text-corruption level (gi).
+          root.classList.remove('critical')
+          root.style.setProperty('--glitch', gi.toFixed(3))
           if (pulse > 0.02) {
             const jx = (Math.random() * 2 - 1) * pulse * 3
             const jy = (Math.random() * 2 - 1) * pulse * 2
@@ -115,26 +156,48 @@ export function HUD({ telemetry, active }: HUDProps) {
         }
       }
 
-      // --- Clocks (glitch/corrupt late-game) --------------------------------
-      let earthStr = formatDuration(tel.earthSeconds)
-      let shipStr = formatDuration(tel.shipSeconds)
-      if (!paused && g > 0 && Math.random() < g * 0.25)
-        earthStr = glitchText(earthStr, g)
-      if (!paused && g > 0 && Math.random() < g * 0.25)
-        shipStr = glitchText(shipStr, g)
-      if (earthRef.current) earthRef.current.textContent = earthStr
-      if (shipRef.current) shipRef.current.textContent = shipStr
-
+      // --- CRT text corruption ----------------------------------------------
+      // Re-roll the noise every GLITCH_INTERVAL ms (a trembling flicker), reading
+      // the freshest base values, and corrupt every field + label by `gi`.
+      const now = performance.now()
+      if (!paused && now - lastGlitch >= GLITCH_INTERVAL) {
+        lastGlitch = now
+        store.earth = corrupt(formatDuration(tel.earthSeconds), gi)
+        store.ship = corrupt(formatDuration(tel.shipSeconds), gi)
+        store.dist = corrupt(
+          `${Math.round(tel.distanceToBlackHole * 1000).toLocaleString()} km`,
+          gi,
+        )
+        store.prox = corrupt(`${Math.round(d * 100)}%`, gi)
+        store.signal = corrupt(`${Math.round(tel.signal * 100)}%`, gi)
+        store.sync = corrupt(synced ? 'LOCKED' : 'SEEKING', gi)
+        for (let i = 0; i < labelEls.length; i++) {
+          store.labels[i] = corrupt(labelBase[i], gi)
+        }
+      }
+      // Write the (throttled) corrupted output every frame.
+      if (syncRef.current)
+        syncRef.current.textContent = store.sync || (synced ? 'LOCKED' : 'SEEKING')
+      if (earthRef.current)
+        earthRef.current.textContent = store.earth || formatDuration(tel.earthSeconds)
+      if (shipRef.current)
+        shipRef.current.textContent = store.ship || formatDuration(tel.shipSeconds)
       if (distRef.current)
-        distRef.current.textContent = `${Math.round(tel.distanceToBlackHole * 1000).toLocaleString()} km`
+        distRef.current.textContent =
+          store.dist || `${Math.round(tel.distanceToBlackHole * 1000).toLocaleString()} km`
       if (proxRef.current)
-        proxRef.current.textContent = `${Math.round(d * 100)}%`
+        proxRef.current.textContent = store.prox || `${Math.round(d * 100)}%`
+      if (signalRef.current)
+        signalRef.current.textContent = store.signal || `${Math.round(tel.signal * 100)}%`
+      for (let i = 0; i < labelEls.length; i++) {
+        labelEls[i].textContent = store.labels[i]
+      }
+
+      // Bars update smoothly every frame (values, not text).
       if (proxBarRef.current) proxBarRef.current.style.width = `${d * 100}%`
       // Signal integrity: recovers while synced, decays otherwise; unstable
       // (jittery) late-game but never a hard failure.
       const integrity = tel.signal * 100
-      if (signalRef.current)
-        signalRef.current.textContent = `${Math.round(tel.signal * 100)}%`
       if (signalBarRef.current) {
         const jitter = paused ? 0 : (Math.random() * 2 - 1) * g * 16
         signalBarRef.current.style.width = `${Math.min(100, Math.max(0, integrity + jitter))}%`

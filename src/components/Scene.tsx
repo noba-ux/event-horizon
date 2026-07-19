@@ -180,7 +180,7 @@ function CameraRig({ engine, active, telemetry }: CameraRigProps) {
     // event-horizon sphere fades out (1→0). Instead of growing the mesh to
     // swallow the frame, the sphere melts into the natural dark while the star
     // field converges — the "spacetime cross-fade" pass-through.
-    tel.horizonFade = 1 - THREE.MathUtils.clamp((fallProgress - 0.875) / 0.115, 0, 1)
+    tel.horizonFade = 1 - THREE.MathUtils.clamp((fallProgress - 0.875) / 0.0575, 0, 1)
 
     // Stage events every 30s: a short pulse surges at each 30/60/90s boundary.
     const fallStage = Math.min(Math.floor(elapsed / 30), 3)

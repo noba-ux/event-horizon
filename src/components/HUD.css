@@ -1,4 +1,15 @@
+/* ==========================================================================
+   Bottom HUD — vintage CRT monochrome Videotex terminal.
+   Layout structure/dimensions are unchanged from before; only the graphic
+   style (colour, glow, scanlines, pixel-grid, font rendering) is restyled.
+   ========================================================================== */
 .hud {
+  /* One deep cyan/sky-blue drives the whole panel. */
+  --crt: #5ce1e6;
+  --crt-dim: rgba(92, 225, 230, 0.62);
+  --crt-faint: rgba(92, 225, 230, 0.26);
+  --crt-ink: #02151a; /* dark "paper" behind inverted Videotex blocks */
+
   position: absolute;
   left: 0;
   right: 0;
@@ -7,11 +18,21 @@
   height: clamp(150px, 20vh, 210px);
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   font-family: var(--mono);
-  color: var(--text);
-  background:
-    linear-gradient(180deg, rgba(2, 8, 14, 0) 0%, rgba(2, 10, 18, 0.82) 42%, rgba(1, 6, 12, 0.95) 100%);
-  border-top: 1px solid rgba(80, 210, 255, 0.28);
-  box-shadow: inset 0 22px 40px -30px rgba(90, 220, 255, 0.5);
+  color: var(--crt);
+  /* Near-black translucent backdrop — the phosphor void. */
+  background: linear-gradient(
+    180deg,
+    rgba(0, 4, 6, 0) 0%,
+    rgba(0, 9, 12, 0.72) 42%,
+    rgba(0, 5, 8, 0.92) 100%
+  );
+  border-top: 1px solid var(--crt-faint);
+  box-shadow: inset 0 22px 44px -32px rgba(92, 225, 230, 0.5);
+  /* CRT phosphor bloom on every glyph. */
+  text-shadow: 0 0 4px var(--crt), 0 0 12px rgba(92, 225, 230, 0.5);
+  /* Kill anti-aliasing so glyphs read crisp/pixelated like a bitmap terminal. */
+  -webkit-font-smoothing: none;
+  font-smooth: never;
   opacity: 0;
   transform: translateY(14px);
   transition: opacity 0.9s ease, transform 0.9s ease;
@@ -22,47 +43,10 @@
   transform: translateY(0);
 }
 
-/* ---- Late-game collapse -------------------------------------------------- */
-.hud::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: repeating-linear-gradient(
-    0deg,
-    rgba(255, 80, 80, 0.06) 0 1px,
-    transparent 1px 3px
-  );
-  opacity: 0;
-  transition: opacity 0.4s ease;
-}
-.hud.critical {
-  transition: none; /* let the per-frame jitter apply instantly */
-  border-top-color: rgba(255, 80, 80, 0.7);
-  box-shadow: inset 0 22px 55px -30px rgba(255, 70, 70, 0.75);
-}
-.hud.critical::after {
-  opacity: calc(var(--glitch, 0) * 0.9);
-  animation: hud-scan 0.45s steps(2) infinite;
-}
-.hud.critical .clock-value,
-.hud.critical .gauge-value.warn {
-  color: #ff6a5a;
-  text-shadow: 0 0 10px rgba(255, 80, 80, 0.6);
-  animation: hud-flicker 0.24s steps(2) infinite;
-}
-@keyframes hud-scan {
-  to {
-    transform: translateY(3px);
-  }
-}
-@keyframes hud-flicker {
-  50% {
-    opacity: 0.6;
-  }
-}
-
+/* Keep the text layer beneath the CRT overlays so scanlines fall over glyphs. */
 .hud-inner {
+  position: relative;
+  z-index: 1;
   display: flex;
   gap: 14px;
   height: 100%;
@@ -71,22 +55,82 @@
   align-items: stretch;
 }
 
+/* ---- CRT overlays: scanlines + fine pixel grid (always on, subtle) -------- */
+.hud::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.34) 0 1px, transparent 1px 3px),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.2) 0 1px, transparent 1px 3px);
+  opacity: 0.5;
+}
+/* ---- Glitch scan-noise: intensifies with --glitch (text-corruption level) - */
+.hud::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(92, 225, 230, 0.12) 0 1px,
+    transparent 1px 3px
+  );
+  mix-blend-mode: screen;
+  opacity: calc(var(--glitch, 0) * 0.85);
+  animation: hud-scan 0.4s steps(3) infinite;
+}
+@keyframes hud-scan {
+  to {
+    transform: translateY(3px);
+  }
+}
+
+/* ---- Critical (near-horizon) — same cyan, just hotter + flickering -------- */
+.hud.critical {
+  transition: none; /* let the per-frame jitter apply instantly */
+  border-top-color: var(--crt);
+  box-shadow: inset 0 22px 60px -30px rgba(92, 225, 230, 0.85);
+}
+.hud.critical .clock-value,
+.hud.critical .gauge-value.warn,
+.hud.critical .gauge-value.sync {
+  color: #d6feff;
+  text-shadow: 0 0 8px var(--crt), 0 0 20px rgba(92, 225, 230, 0.75);
+  animation: hud-flicker 0.18s steps(2) infinite;
+}
+@keyframes hud-flicker {
+  50% {
+    opacity: 0.62;
+  }
+}
+
+/* ---- Cells --------------------------------------------------------------- */
 .hud-cell {
   position: relative;
   flex: 1 1 0;
   min-width: 0;
   padding: 8px 12px;
-  background: rgba(6, 16, 24, 0.4);
-  border: 1px solid rgba(70, 190, 240, 0.18);
-  border-radius: 4px;
+  background: rgba(0, 10, 14, 0.34);
+  border: 1px solid var(--crt-faint);
+  border-radius: 2px;
   overflow: hidden;
 }
 
+/* Inverted Videotex header block — dark text on a glowing cyan bar. */
 .hud-cell-label {
+  display: inline-block;
   font-size: 9px;
   letter-spacing: 2.5px;
-  color: var(--text-dim);
+  color: var(--crt-ink);
+  background: var(--crt);
+  padding: 1px 7px;
   margin-bottom: 8px;
+  text-shadow: none;
+  box-shadow: 0 0 9px rgba(92, 225, 230, 0.55);
 }
 
 /* ---- Radar --------------------------------------------------------------- */
@@ -100,7 +144,9 @@
 .radar-canvas {
   width: 118px;
   height: 118px;
-  filter: drop-shadow(0 0 6px rgba(90, 220, 255, 0.25));
+  /* Force the canvas (drawn in mixed colours) into the monochrome cyan theme. */
+  filter: grayscale(1) sepia(1) hue-rotate(150deg) saturate(6) brightness(1.05)
+    drop-shadow(0 0 6px rgba(92, 225, 230, 0.4));
 }
 
 /* ---- Clocks -------------------------------------------------------------- */
@@ -116,39 +162,38 @@
 .gauge-name {
   font-size: 10px;
   letter-spacing: 1.5px;
-  color: var(--text-dim);
+  color: var(--crt-dim);
 }
 .clock-value {
   font-size: 17px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 1px;
+  color: var(--crt);
 }
-.clock-value.earth {
-  color: #7fe1ff;
-  text-shadow: 0 0 10px rgba(90, 220, 255, 0.5);
-}
+/* Monochrome: earth & ship both read in cyan (distinguished by their labels). */
+.clock-value.earth,
 .clock-value.ship {
-  color: #ffb454;
-  text-shadow: 0 0 10px rgba(255, 160, 60, 0.4);
+  color: var(--crt);
+  text-shadow: 0 0 6px var(--crt), 0 0 14px rgba(92, 225, 230, 0.5);
 }
 .clock-note {
   margin-top: 4px;
   font-size: 9px;
   letter-spacing: 1px;
-  color: var(--text-dim);
+  color: var(--crt-dim);
 }
 
 /* ---- Nav / gauges -------------------------------------------------------- */
 .gauge-value {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: var(--text);
+  color: var(--crt);
 }
 .gauge-value.warn {
-  color: #ff8f5a;
+  color: var(--crt);
 }
 .gauge-value.dim {
-  color: var(--text-dim);
+  color: var(--crt-dim);
   font-size: 11px;
   letter-spacing: 1px;
 }
@@ -157,31 +202,34 @@
   letter-spacing: 2px;
 }
 .gauge-value.sync.locked {
-  color: #6effc0;
-  text-shadow: 0 0 10px rgba(110, 255, 192, 0.6);
+  color: #d6feff;
+  text-shadow: 0 0 8px var(--crt), 0 0 18px rgba(92, 225, 230, 0.7);
 }
 .gauge-value.sync.seeking {
-  color: #ff8f5a;
+  color: var(--crt-dim);
 }
 .bar {
   height: 6px;
   margin: 2px 0 7px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
+  background: rgba(92, 225, 230, 0.08);
+  border: 1px solid var(--crt-faint);
+  border-radius: 2px;
   overflow: hidden;
 }
 .bar-fill {
   height: 100%;
   width: 0%;
-  border-radius: 3px;
+  border-radius: 2px;
   transition: width 0.25s linear;
 }
+/* Both bars are cyan now; proximity reads hotter/brighter. */
 .bar-fill.prox {
-  background: linear-gradient(90deg, #ffb454, #ff5a5a);
-  box-shadow: 0 0 10px rgba(255, 90, 90, 0.5);
+  background: linear-gradient(90deg, rgba(92, 225, 230, 0.5), #d6feff);
+  box-shadow: 0 0 10px rgba(92, 225, 230, 0.6);
 }
 .bar-fill.signal {
-  background: linear-gradient(90deg, #40e0ff, #6effc0);
+  background: linear-gradient(90deg, rgba(92, 225, 230, 0.35), var(--crt));
+  box-shadow: 0 0 8px rgba(92, 225, 230, 0.45);
 }
 
 /* ---- Responsive ---------------------------------------------------------- */

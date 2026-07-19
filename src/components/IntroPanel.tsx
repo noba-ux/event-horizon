@@ -61,6 +61,11 @@ export function IntroPanel({ onEnter }: IntroPanelProps) {
 
   return (
     <div className="intro">
+      {/* Developer credit — top-right, with a blinking terminal cursor. */}
+      <a className="dev-credit" href="mailto:uxui98@gmail.com">
+        developer_Bogyeong Kang<span className="dev-cursor">_</span>
+      </a>
+
       {/* Hero — sub-copy pinned above a dead-centre title. */}
       <div className="intro-hero">
         <p className="intro-body">
@@ -137,7 +142,7 @@ export function IntroPanel({ onEnter }: IntroPanelProps) {
             기본 데모 음원으로 시작하기
           </button>
           <button type="button" className="enter-btn" onClick={handleEnter}>
-            [ 진입 ]
+            궤적 진입
           </button>
         </div>
 

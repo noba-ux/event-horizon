@@ -55,6 +55,36 @@
   padding: 7vh 24px 5vh;
 }
 
+/* ---- Developer credit (top-right, blinking terminal cursor) -------------- */
+.dev-credit {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: 16px;
+  z-index: 5;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+  text-decoration: none;
+  color: #86b4c0; /* faint cyan-grey — melts into the void */
+  opacity: 0.45;
+  pointer-events: auto;
+  transition: opacity 0.3s ease, color 0.3s ease;
+}
+.dev-credit:hover {
+  opacity: 0.95;
+  color: #cbeef4;
+}
+/* The trailing underscore blinks like an old terminal cursor — always on. */
+.dev-cursor {
+  animation: dev-blink 1.05s steps(1) infinite;
+}
+@keyframes dev-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
 /* ---- Hero: sub-copy above a dead-centre title --------------------------- */
 /* The hero itself is just a flex spacer that pushes the console to the bottom;
    the title and body are absolutely positioned relative to .intro so the title
@@ -332,6 +362,20 @@
   .intro-field-file {
     display: none;
   }
+  /* Bigger, more legible title on small screens. */
+  .intro-title {
+    width: 80vw;
+  }
+  /* Tighten the bottom console so its height doesn't crowd/bury the title. */
+  .intro-console {
+    padding-top: 10px;
+  }
+  .intro-tag {
+    margin-bottom: 7px;
+  }
+  .intro-actions {
+    margin-top: 10px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -344,7 +388,7 @@
   .intro-actions {
     flex-direction: column-reverse;
     align-items: stretch;
-    gap: 12px;
+    gap: 8px;
   }
   .enter-btn {
     width: 100%;
