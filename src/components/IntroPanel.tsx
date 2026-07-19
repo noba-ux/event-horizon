@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { extractVideoId } from '../audio/youtube'
 import titleImage from '../assets/event-horizon_title.png'
+import titleImageMobile from '../assets/event-horizon_title_mobile.png'
 
 export type IntroSource =
   | { mode: 'youtube'; videoId: string }
@@ -70,7 +71,12 @@ export function IntroPanel({ onEnter }: IntroPanelProps) {
           지금, 당신의 가장 뜨거운 순간을 온전히 감각하십시오.
         </p>
         <h1 className="intro-title">
-          <img src={titleImage} alt="EVENT HORIZON" />
+          {/* Small tablets and below get the taller, more legible mobile title.
+              Layout is unchanged — both render at the same .intro-title width. */}
+          <picture>
+            <source media="(max-width: 768px)" srcSet={titleImageMobile} />
+            <img src={titleImage} alt="EVENT HORIZON" />
+          </picture>
         </h1>
       </div>
 
