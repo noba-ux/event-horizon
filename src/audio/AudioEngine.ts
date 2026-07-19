@@ -20,6 +20,11 @@ export class AudioEngine {
   // the simulation (so the whole scene freezes when the music pauses).
   isPlaying = false
   onPlayStateChanged: ((playing: boolean) => void) | null = null
+  // Mobile browsers block the YouTube iframe's audio unless play() is called
+  // inside a direct tap. When we detect playback never actually began, this
+  // fires so the app can show a "tap to play" affordance that starts it in a
+  // fresh user gesture.
+  onAutoplayBlocked: (() => void) | null = null
 
   // currentPlaybackRate: the smoothed rate actually applied to the source each
   // update. It eases toward the target set by the scene (see setTargetPlaybackRate).
@@ -47,6 +52,9 @@ export class AudioEngine {
   private ytSlowestRate = 1
   private ytLastAppliedRate = 1
   private ytLastApplyTime = 0
+  // True once the iframe actually reaches a playing/buffering state — used to
+  // tell "playing" apart from "autoplay was blocked".
+  private ytStarted = false
 
   private ensureContext(): AudioContext {
     if (!this.ctx) {
@@ -94,6 +102,17 @@ export class AudioEngine {
   togglePlay() {
     if (this.isPlaying) this.pause()
     else this.resume()
+  }
+
+  /**
+   * Start (or restart) YouTube playback from a direct user gesture — the only
+   * reliable way to begin iframe audio on mobile after autoplay was blocked.
+   */
+  retryYouTubePlay() {
+    if (this.mode !== 'youtube') return
+    if (this.ctx && this.ctx.state === 'suspended') void this.ctx.resume()
+    this.ytPlayer?.setVolume(80)
+    this.ytPlayer?.playVideo()
   }
 
   private fadeMasterTo(value: number, seconds: number) {
@@ -197,13 +216,23 @@ export class AudioEngine {
             }
             this.setPlaying(true)
             resolve()
+            // Mobile autoplay guard: if the iframe hasn't actually begun playing
+            // shortly after ready (blocked outside a direct tap), ask the app to
+            // surface a tap-to-play prompt.
+            window.setTimeout(() => {
+              if (this.mode === 'youtube' && !this.ytStarted) {
+                this.onAutoplayBlocked?.()
+              }
+            }, 2000)
           },
           onStateChange: (event) => {
             // Ignore YouTube events once we've switched to the ambient pad.
             if (this.mode !== 'youtube') return
-            // YouTube PlayerState: 1 = playing, 2 = paused, 0 = ended.
-            if (event.data === 1) this.setPlaying(true)
-            else if (event.data === 2 || event.data === 0) this.setPlaying(false)
+            // YouTube PlayerState: 1 = playing, 3 = buffering, 2 = paused, 0 = ended.
+            if (event.data === 1 || event.data === 3) {
+              this.ytStarted = true
+              this.setPlaying(true)
+            } else if (event.data === 2 || event.data === 0) this.setPlaying(false)
           },
         },
       })

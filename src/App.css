@@ -237,6 +237,56 @@
   color: var(--warn);
 }
 
+/* ---- Mobile audio-unlock overlay ---------------------------------------- */
+.audio-unlock {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  font-family: var(--mono);
+  color: var(--text);
+  background: rgba(2, 3, 10, 0.62);
+  backdrop-filter: blur(2px);
+  -webkit-tap-highlight-color: transparent;
+}
+.audio-unlock-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 74px;
+  height: 74px;
+  padding-left: 6px;
+  font-size: 26px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 0 26px rgba(64, 224, 255, 0.35);
+  animation: pulse-ring 1.8s ease-in-out infinite;
+}
+@keyframes pulse-ring {
+  0%,
+  100% {
+    box-shadow: 0 0 22px rgba(64, 224, 255, 0.28);
+  }
+  50% {
+    box-shadow: 0 0 34px rgba(64, 224, 255, 0.55);
+  }
+}
+.audio-unlock-text {
+  font-size: 13px;
+  letter-spacing: 3px;
+  color: var(--text-dim);
+}
+
 /* ---- YouTube corner panel ----------------------------------------------- */
 .yt-panel {
   position: absolute;

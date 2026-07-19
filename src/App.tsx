@@ -6,6 +6,7 @@ import { HUD } from './components/HUD'
 import { CursorLens } from './components/CursorLens'
 import { Overlays } from './components/Overlays'
 import { AudioEngine } from './audio/AudioEngine'
+import { loadYouTubeApi } from './audio/youtube'
 import { createTelemetry } from './telemetry'
 import type { Phase } from './telemetry'
 import './App.css'
@@ -16,6 +17,8 @@ function App() {
   const [started, setStarted] = useState(false)
   const [ytMode, setYtMode] = useState(false)
   const [paused, setPaused] = useState(false)
+  // Mobile blocks YouTube audio autoplay → show a tap-to-play prompt when caught.
+  const [audioBlocked, setAudioBlocked] = useState(false)
 
   const engineRef = useRef<AudioEngine | null>(null)
   const ytHostRef = useRef<HTMLDivElement>(null)
@@ -25,6 +28,12 @@ function App() {
   // Tear down audio if the app unmounts.
   useEffect(() => {
     return () => engineRef.current?.dispose()
+  }, [])
+
+  // Preload the YouTube IFrame API early so the player is ready sooner after the
+  // user enters (shrinks the mobile autoplay-blocked window).
+  useEffect(() => {
+    void loadYouTubeApi().catch(() => {})
   }, [])
 
   // Space toggles play/pause once the simulation has started. Pausing the music
@@ -53,6 +62,9 @@ function App() {
       telemetryRef.current.simulationPaused = !playing
       setPaused(!playing)
     }
+
+    // Mobile autoplay was blocked → surface a tap-to-play prompt.
+    engine.onAutoplayBlocked = () => setAudioBlocked(true)
 
     switch (source.mode) {
       case 'demo':
@@ -112,6 +124,22 @@ function App() {
         >
           ❚❚ SIGNAL HELD · SPACE TO RESUME
         </div>
+      )}
+
+      {/* Mobile autoplay unlock: a full-screen tap layer that starts the audio
+          inside a direct user gesture (the only way iOS/Android will allow it). */}
+      {started && audioBlocked && phase !== 'whitehole' && (
+        <button
+          type="button"
+          className="audio-unlock"
+          onClick={() => {
+            engineRef.current?.retryYouTubePlay()
+            setAudioBlocked(false)
+          }}
+        >
+          <span className="audio-unlock-icon">►</span>
+          <span className="audio-unlock-text">탭하여 사운드 재생</span>
+        </button>
       )}
 
       {/* YouTube host: a small, unobtrusive corner panel; hidden until used. */}
