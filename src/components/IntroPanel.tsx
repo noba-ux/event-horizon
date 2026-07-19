@@ -100,7 +100,7 @@ export function IntroPanel({ onEnter }: IntroPanelProps) {
             />
           </div>
 
-          <div className="intro-field">
+          <div className="intro-field intro-field-file">
             <label>로컬 음원 · MP3</label>
             <div
               className={`dropzone${dragActive ? ' drag' : ''}${file ? ' has-file' : ''}`}

@@ -276,6 +276,14 @@
 }
 
 /* ---- Responsive ---------------------------------------------------------- */
+/* Small tablets and below rarely have local MP3 files → hide the file picker
+   (the YouTube URL field + demo button remain). */
+@media (max-width: 768px) {
+  .intro-field-file {
+    display: none;
+  }
+}
+
 @media (max-width: 560px) {
   .intro {
     padding: 6vh 16px 4vh;
