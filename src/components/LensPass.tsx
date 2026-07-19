@@ -15,21 +15,40 @@ const VERT = /* glsl */ `
 `
 
 // Screen-space gravitational lensing (physics-inspired, not a real solver).
-// We bend the sampled UV toward the black-hole centre, with an epsilon + clamp
-// so the distortion never blows up near the middle.
+// The old version used a 1/d² pull hard-clamped to a ceiling, which produced a
+// flat plateau (a disc where every pixel got the same offset) and an abrupt
+// derivative break at its edge — the "포토샵 필터" faceting/stair-stepping.
+// This version drives everything from ONE smooth exponential envelope so the
+// bending is continuous everywhere: no spike at the centre, no clamp plateau.
 const FRAG = /* glsl */ `
   precision highp float;
   uniform sampler2D uScene;
   uniform vec2 uCenter;
-  uniform float uStrength;
-  uniform float uMaxLens;
+  uniform float uStrength;   // peak radial contraction fraction near the ring
+  uniform float uFalloff;    // how tightly the well decays with distance
   uniform float uAspect;
   uniform float uTime;
   uniform float uEdge;
   uniform float uHoleRadius;
   uniform float uMaskOn;
-  uniform float uSwirl;
+  uniform float uHoleFade;   // 1 = solid horizon, 0 = dissolved (final pass-through)
+  uniform float uSwirl;      // peak swirl rotation (radians) near the ring
+  uniform float uRingStrength; // brightness of the Einstein ring halo
   varying vec2 vUv;
+
+  // Compact value-noise fBm to break the Einstein ring into gaseous wisps.
+  float lhash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+  float lnoise(vec2 p){
+    vec2 i = floor(p); vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(lhash(i), lhash(i + vec2(1.0, 0.0)), u.x),
+               mix(lhash(i + vec2(0.0, 1.0)), lhash(i + vec2(1.0, 1.0)), u.x), u.y);
+  }
+  float lfbm(vec2 p){
+    float v = 0.0; float a = 0.5;
+    for (int k = 0; k < 4; k++) { v += a * lnoise(p); p *= 2.0; a *= 0.5; }
+    return v;
+  }
 
   void main() {
     vec2 uv = vUv;
@@ -37,38 +56,57 @@ const FRAG = /* glsl */ `
     delta.x *= uAspect;            // aspect-correct so the well is round
     float d = length(delta);
     float ang = atan(delta.y, delta.x);
-    float safeD = max(d, 0.03);    // epsilon: avoid a singularity at centre
-    float lens = uStrength / (safeD * safeD);
-    lens = clamp(lens, 0.0, uMaxLens);
-    vec2 dir = delta / max(d, 1e-4);
-    dir.x /= uAspect;              // back to UV space
 
-    // Angular swirl: rotate the sampling offset more as we near the centre, so
-    // the warp spirals inward rather than just magnifying radially.
-    float swirlAmt = clamp(uSwirl / (safeD + 0.12), 0.0, 1.4);
-    float sc = cos(swirlAmt), ss = sin(swirlAmt);
-    vec2 rot = vec2(delta.x * sc - delta.y * ss, delta.x * ss + delta.y * sc);
-    rot.x /= uAspect;             // back to UV space
-    vec2 distortedUv = uCenter + rot - dir * lens; // swirl, then pull inward
+    // Smooth gravitational well: a Gaussian-like exponential decay instead of
+    // 1/d². It is C-infinity smooth — soft and curved everywhere, peaks gently
+    // at the centre, and needs no clamp (so no plateau, no faceting).
+    float falloff = exp(-d * d * uFalloff);
+    // Fade the effect to zero *inside* the horizon (so we never sample the black
+    // interior) and ramp it in just outside → a soft, curved Einstein-ring band.
+    float ring = smoothstep(uHoleRadius * 0.6, uHoleRadius * 2.4 + 0.05, d);
+    float amount = falloff * ring;
 
-    // Edge instability: a faint ripple that grows toward the frame edges and
-    // with distortion, so the periphery feels like it's coming apart.
-    float edge = smoothstep(0.32, 0.72, d);
-    distortedUv += edge * uEdge * 0.004 * vec2(
-      sin(uv.y * 42.0 + uTime * 3.0),
-      cos(uv.x * 42.0 + uTime * 2.3)
+    // Swirl (tangential rotation) and radial contraction share the SAME smooth
+    // envelope, so light spirals inward along one continuous curve rather than
+    // two competing warps fighting each other into kinks.
+    float swirl = uSwirl * amount;
+    float pull = min(uStrength * amount, 0.9); // keep the sample from crossing centre
+    float cs = cos(swirl), sn = sin(swirl);
+    vec2 rotated = vec2(delta.x * cs - delta.y * sn, delta.x * sn + delta.y * cs);
+    vec2 curved = rotated * (1.0 - pull);       // rotate, then step inward
+    curved.x /= uAspect;                        // back to UV space
+    vec2 distortedUv = uCenter + curved;
+
+    // Edge instability: a soft, LOW-frequency ripple toward the frame edges.
+    // Low frequency + tiny amplitude → shimmer without any visible faceting.
+    float edge = smoothstep(0.34, 0.85, d);
+    distortedUv += edge * uEdge * 0.0025 * vec2(
+      sin(uv.y * 14.0 + uTime * 2.2),
+      cos(uv.x * 14.0 + uTime * 1.8)
     );
     distortedUv = clamp(distortedUv, 0.0, 1.0); // never sample out of bounds
 
     gl_FragColor = texture2D(uScene, distortedUv);
 
-    // Event horizon (TOP PRIORITY): interior is pure black, no exceptions.
-    // The rim is angularly wobbled so it never reads as a perfect circle.
-    float rs = uHoleRadius * (1.0
-      + 0.05 * sin(ang * 7.0 + uTime * 0.7)
-      + 0.03 * sin(ang * 13.0 - uTime * 0.4));
-    float hole = smoothstep(rs * 0.9, rs, d);
-    gl_FragColor.rgb *= mix(1.0, hole, uMaskOn);
+    // --- Einstein ring: a torn halo of gravitationally lensed nebula gas that
+    // winds around the horizon. Angular fBm shreds it into blueish wisps and a
+    // Doppler beaming term makes it strongly asymmetric — one limb blazes, the
+    // other nearly vanishes — so it reads as swirling gas, not a clean glow.
+    float ringR = uHoleRadius * 1.06;
+    float ringW = uHoleRadius * 0.16 + 0.012;        // gassy band, scales w/ hole
+    float rd = (d - ringR) / ringW;
+    float gas = lfbm(vec2(ang * 2.6 + uTime * 0.35, d * 9.0 - uTime * 0.15));
+    float ering = exp(-rd * rd) * (0.25 + 1.25 * gas); // thin band, torn by noise
+    float dop = 0.5 + 0.5 * cos(ang - uTime * 0.2 - 1.1); // asymmetric limb
+    vec3 ringCol = mix(vec3(0.30, 0.52, 0.95), vec3(0.82, 0.92, 1.0), gas);
+    gl_FragColor.rgb += ringCol * ering * uRingStrength * (0.25 + 1.5 * dop * dop) * uMaskOn;
+
+    // Event horizon: a perfect, knife-edged black circle — but its opacity is
+    // scaled by uHoleFade, which drops 1→0 over the final ~15s. As it fades the
+    // black sphere melts into the surrounding dark (pass-through) instead of
+    // growing to eat the frame, while the star field converges through it.
+    float hole = smoothstep(uHoleRadius - 0.003, uHoleRadius, d);
+    gl_FragColor.rgb *= mix(1.0, hole, uMaskOn * uHoleFade);
 
     #include <colorspace_fragment>
   }
@@ -100,14 +138,16 @@ export function LensPass({ telemetry }: LensPassProps) {
         uniforms: {
           uScene: { value: null as THREE.Texture | null },
           uCenter: { value: new THREE.Vector2(0.5, 0.5) },
-          uStrength: { value: 0.0012 },
-          uMaxLens: { value: 0.16 },
+          uStrength: { value: 0.15 },
+          uFalloff: { value: 6.5 },
           uAspect: { value: 1 },
           uTime: { value: 0 },
           uEdge: { value: 0 },
           uHoleRadius: { value: 0.02 },
           uMaskOn: { value: 1 },
+          uHoleFade: { value: 1 },
           uSwirl: { value: 0 },
+          uRingStrength: { value: 0 },
         },
         vertexShader: VERT,
         fragmentShader: FRAG,
@@ -137,23 +177,40 @@ export function LensPass({ telemetry }: LensPassProps) {
       projected.y * 0.5 + 0.5,
     )
     material.uniforms.uAspect.value = size.width / Math.max(1, size.height)
+    // Sync-lock relief: when the marker is locked, ease BOTH the radial pull and
+    // the swirl by 35% (syncEase is already frame-smoothed, so this lerps in/out
+    // gently — spacetime "stabilises" rather than snapping).
+    const calm35 = 1 - tel.syncEase * 0.35
+    const fi = tel.fallIntensity
     // Lensing intensifies as we approach and again during the absorb.
-    material.uniforms.uStrength.value = white ? 0 : 0.0011 + d * 0.0032 + tel.absorb * 0.012
+    material.uniforms.uStrength.value = white
+      ? 0
+      : (0.12 + d * 0.32 + tel.absorb * 0.9) * calm35
     // Sim time freezes while paused → the lens ripple freezes, but we still
     // render every frame so the screen shows the frozen scene (never blank).
     material.uniforms.uTime.value = tel.simTime
     material.uniforms.uEdge.value = white ? 0 : d
     material.uniforms.uMaskOn.value = white ? 0 : 1
-    // Spiral swirl grows with distortion/fall, eased when the marker is synced.
-    const calm = 1 - tel.syncEase * 0.4
-    material.uniforms.uSwirl.value = white ? 0 : (d * 0.4 + tel.fallIntensity * 0.5) * calm
-    // Event-horizon screen radius grows with approach and swells to swallow the
-    // whole frame during the singularity absorb.
-    const dist = tel.distanceToBlackHole || 320
-    const distHole = THREE.MathUtils.clamp(6.0 / dist, 0.02, 0.4)
-    material.uniforms.uHoleRadius.value = white
+    // Horizon dissolve (1→0 over the final ~15s): fades the black sphere out and
+    // takes the ring with it. Absorb no longer swells the hole — it drives the
+    // background swirl so the last starlight whirls violently into the centre.
+    const fade = white ? 0 : tel.horizonFade
+    // Spiral swirl grows with distortion/fall (+ a violent final absorb whirl),
+    // eased when the marker is synced.
+    material.uniforms.uSwirl.value = white
       ? 0
-      : Math.max(distHole, tel.absorb * 1.7)
+      : (d * 0.55 + fi * 0.7 + tel.absorb * 1.6) * calm35
+    // Event-horizon screen radius: grows as we approach and with the fall. It no
+    // longer swells with absorb — the sphere is dissolved via uHoleFade instead.
+    const dist = tel.distanceToBlackHole || 320
+    const distHole = THREE.MathUtils.clamp((6.5 / dist) * (1 + fi * fi * 4.0), 0.02, 0.6)
+    material.uniforms.uHoleRadius.value = white ? 0 : distHole
+    material.uniforms.uHoleFade.value = fade
+    // Einstein ring: blazes brighter as we approach and the fall deepens, eased
+    // by a sync lock, and dissolves together with the horizon at the very end.
+    material.uniforms.uRingStrength.value = white
+      ? 0
+      : (0.55 + d * 1.1 + fi * 0.7) * calm35 * fade
     material.uniforms.uScene.value = fbo.texture
 
     // 1) render the real scene to the FBO, 2) draw it through the lens.

@@ -2,18 +2,29 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import type { Telemetry } from '../telemetry'
-import { makeSoftDot } from '../three/textures'
+import { makeSharpStar } from '../three/textures'
 
-// Real-space particles dominate; code glyphs are a small minority elsewhere.
+// The field is now ONLY fine point-stars — no speed-lines, streaks or blobs.
+// Motion is conveyed by the inflow spiral and, past the 60s mark, by subtle
+// 1px motion-blur trails that follow each star's actual path into the hole.
 const STAR_COUNT = 1300 // far fine stars (points)
 const DUST_COUNT = 2800 // faint mid dust — fills the void with density (points)
-const FORE_COUNT = 520 // near volumetric soft particles (instanced) — the rush
-const STREAK_COUNT = 220 // elongating light streaks (instanced)
 const DEPTH = 640
 const BEND = 0.72 // how far the field warps inward near the hole
+// Gravitational inflow: each particle's own orbit radius decays toward the
+// centre, faster as the fall deepens (fallIntensity) and faster the closer it
+// already is — so the whole field spirals down the well, not just streams past.
+const INFLOW = 7 // radius units/sec drained inward at full fall
+const INFLOW_RESPAWN = 3 // consumed at this radius → respawn far out
 
-// Local cursor lens — a small well that nudges nearby particles (foreground +
-// mid dust). It never changes global speed or rotation.
+// Motion-blur trails switch on when only ~60s of the ~120s fall remain
+// (fallProgress ≥ 0.5) and lengthen organically toward the end.
+const TRAIL_START = 0.5 // fallProgress at which trails begin to appear
+const TRAIL_RAMP = 0.35 // ramps to full over the next 35% of the fall
+const TRAIL_JUMP2 = 900 // per-frame jump² above this = a respawn → suppress trail
+
+// Local cursor lens — a small well that nudges nearby mid-dust particles.
+// It never changes global speed or rotation.
 const F_LENS_R = 30
 const F_LENS_PLANE = 120
 const F_LENS_BASE = 0.55
@@ -78,39 +89,6 @@ function makeBand(count: number): BandLayer {
   return { positions, base, z, speed }
 }
 
-// Foreground is restricted to faint blue-white (no grey, no cyan flood).
-const FORE_TINTS = [
-  [0.85, 0.92, 1.0],
-  [0.72, 0.85, 1.0],
-  [0.9, 0.95, 1.0],
-  [0.66, 0.88, 0.98],
-]
-
-/** A tight spark: small bright core, fast falloff → reads as dust, not a bubble. */
-function makeSpark(size = 64): THREE.CanvasTexture {
-  const canvas = document.createElement('canvas')
-  canvas.width = size
-  canvas.height = size
-  const ctx = canvas.getContext('2d')!
-  const g = ctx.createRadialGradient(
-    size / 2,
-    size / 2,
-    0,
-    size / 2,
-    size / 2,
-    size / 2,
-  )
-  g.addColorStop(0, 'rgba(255,255,255,1)')
-  g.addColorStop(0.18, 'rgba(255,255,255,0.5)')
-  g.addColorStop(0.45, 'rgba(255,255,255,0.1)')
-  g.addColorStop(1, 'rgba(255,255,255,0)')
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, size, size)
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  return texture
-}
-
 interface PointLayer {
   positions: Float32Array
   angle: Float32Array
@@ -118,6 +96,8 @@ interface PointLayer {
   z: Float32Array
   speed: Float32Array
   omega: Float32Array // orbital angular drift → spiral, not radial-only motion
+  swirlBias: Float32Array // per-star random swirl weight → irregular vortex
+  inflowBias: Float32Array // per-star random suction weight → uneven inflow
   isBand: Uint8Array // 1 = clustered on the galactic band
   maxR: number
 }
@@ -135,6 +115,8 @@ function makeLayer(
   const z = new Float32Array(count)
   const speed = new Float32Array(count)
   const omega = new Float32Array(count)
+  const swirlBias = new Float32Array(count)
+  const inflowBias = new Float32Array(count)
   const isBand = new Uint8Array(count)
   for (let i = 0; i < count; i++) {
     const band = Math.random() < bandFraction
@@ -146,8 +128,66 @@ function makeLayer(
     speed[i] = speedBase * (0.5 + Math.random() * 1.0)
     // Band particles hold their shape (no orbit); the rest swirl coherently.
     omega[i] = band ? 0 : omegaScale * (0.5 + Math.random())
+    // Random per-star weights so the final vortex is uneven — each star whirls
+    // in at its own rate/radius instead of one uniform, fake-looking spiral.
+    swirlBias[i] = 0.5 + Math.random() * 1.6
+    inflowBias[i] = 0.5 + Math.random() * 1.7
   }
-  return { positions, angle, radius, z, speed, omega, isBand, maxR }
+  return { positions, angle, radius, z, speed, omega, swirlBias, inflowBias, isBand, maxR }
+}
+
+// Motion-blur trail buffers for a point layer: a LineSegments where each star
+// contributes one segment (head = current position, tail = extrapolated back
+// along its recent velocity). Vertex colours fade the tail to nothing.
+interface TrailData {
+  positions: Float32Array // count*2 * 3
+  colors: Float32Array // count*2 * 3
+  prev: Float32Array // count * 3 — previous-frame positions ("포지션 부모 값")
+  tint: [number, number, number]
+  inited: boolean
+}
+
+function makeTrail(count: number, tint: [number, number, number]): TrailData {
+  return {
+    positions: new Float32Array(count * 6),
+    colors: new Float32Array(count * 6),
+    prev: new Float32Array(count * 3),
+    tint,
+    inited: false,
+  }
+}
+
+// Stellar spectrum for per-particle colour. Kept pastel / high-value / low-sat
+// so nothing reads as a primary — mostly clean white-cream, a warm minority and
+// a cool minority, mixed randomly at spawn. (Purely a colour buffer; it does not
+// touch any motion/streaming logic.)
+function fillStarColors(count: number): Float32Array {
+  const arr = new Float32Array(count * 3)
+  for (let i = 0; i < count; i++) {
+    const roll = Math.random()
+    let r: number, g: number, b: number
+    if (roll < 0.7) {
+      // ~70% clean white → the faintest warm/cool cream drift.
+      const w = 0.9 + Math.random() * 0.1
+      r = w
+      g = w * (0.97 + Math.random() * 0.03)
+      b = w * (0.95 + Math.random() * 0.05)
+    } else if (roll < 0.85) {
+      // ~15% warm: soft, pastel amber/gold (never a saturated orange).
+      r = 1.0
+      g = 0.85 + Math.random() * 0.07
+      b = 0.68 + Math.random() * 0.12
+    } else {
+      // ~15% cool: soft, pastel cyan / light blue.
+      r = 0.7 + Math.random() * 0.12
+      g = 0.87 + Math.random() * 0.08
+      b = 1.0
+    }
+    arr[i * 3] = r
+    arr[i * 3 + 1] = g
+    arr[i * 3 + 2] = b
+  }
+  return arr
 }
 
 interface StarfieldProps {
@@ -155,68 +195,42 @@ interface StarfieldProps {
 }
 
 /**
- * Layered deep-space backdrop with real depth. The foreground layer is small,
- * fast dust sparks and thin light streaks (not blobs) that drift past the
- * camera: depth drives their opacity, speed and streak length while the width
- * stays tiny and capped — faint blue-white, still bending toward the hole so
- * the black hole stays the visual centre.
+ * Deep-space backdrop built entirely from fine point-stars (no streaks/blobs).
+ * The field spirals inward under gravitational inflow; once the fall passes its
+ * midpoint each star grows a subtle 1px motion-blur trail that traces its curved
+ * path toward the vanishing point, lengthening as the end approaches.
  */
 export function Starfield({ telemetry }: StarfieldProps) {
   const camera = useThree((s) => s.camera)
   const starsRef = useRef<THREE.Points>(null)
   const dustRef = useRef<THREE.Points>(null)
-  const foreRef = useRef<THREE.InstancedMesh>(null)
-  const streaksRef = useRef<THREE.InstancedMesh>(null)
-  const dummy = useMemo(() => new THREE.Object3D(), [])
-  const color = useMemo(() => new THREE.Color(), [])
-  const softDot = useMemo(() => makeSoftDot(64), [])
-  const spark = useMemo(() => makeSpark(64), [])
+  const starTrailRef = useRef<THREE.LineSegments>(null)
+  const dustTrailRef = useRef<THREE.LineSegments>(null)
+  const milkyRef = useRef<THREE.Points>(null)
+  const sharpStar = useMemo(() => makeSharpStar(32), [])
   const syncGlow = useRef(0)
-  // Local cursor-lens state (foreground only).
+  // Local cursor-lens state (mid dust only).
   const mouseNdc = useMemo(() => new THREE.Vector2(0, 0), [])
   const worldMouse = useMemo(() => new THREE.Vector3(), [])
   const rayDir = useMemo(() => new THREE.Vector3(), [])
   const mouse = useMemo(() => ({ velocity: 0, influence: 0, lastT: 0 }), [])
   // Per-frame shared state: cursor well + the eased sync-calm factor.
   const lensState = useMemo(() => ({ strength: 0, planeZ: 0, calm: 1 }), [])
-  const milkyRef = useRef<THREE.Points>(null)
 
-  // Deeper stars drift slowest; nearer layers orbit a touch faster. The visible
-  // galactic band is a dedicated layer (below), so these stay uniform.
   const stars = useMemo(() => makeLayer(STAR_COUNT, 12, 220, 0.02, 0), [])
   const dust = useMemo(() => makeLayer(DUST_COUNT, 8, 240, 0.05, 0), [])
-  const fore = useMemo(() => makeLayer(FORE_COUNT, 40, 150, 0.06, 0), [])
-  const streaks = useMemo(() => makeLayer(STREAK_COUNT, 16, 200, 0.05, 0), [])
   const milky = useMemo(() => makeBand(MILKY_COUNT), [])
 
-  // Per-instance foreground traits. Mostly thin streaks + small dust; the width
-  // stays tiny and hard-capped so nothing reads as a sphere/blob.
-  const foreTraits = useMemo(() => {
-    const isStreak = new Uint8Array(FORE_COUNT)
-    const width = new Float32Array(FORE_COUNT)
-    const baseLen = new Float32Array(FORE_COUNT)
-    const phase = new Float32Array(FORE_COUNT)
-    const tint = new Float32Array(FORE_COUNT * 3)
-    for (let i = 0; i < FORE_COUNT; i++) {
-      const streaky = Math.random() < 0.62 // majority are thin streaks
-      isStreak[i] = streaky ? 1 : 0
-      width[i] = streaky ? 0.09 + Math.random() * 0.12 : 0.2 + Math.random() * 0.24
-      baseLen[i] = streaky ? 1.6 + Math.random() * 2.0 : 1.0
-      phase[i] = Math.random() * Math.PI * 2
-      const c = FORE_TINTS[(Math.random() * FORE_TINTS.length) | 0]
-      tint[i * 3] = c[0]
-      tint[i * 3 + 1] = c[1]
-      tint[i * 3 + 2] = c[2]
-    }
-    return { isStreak, width, baseLen, phase, tint }
-  }, [])
+  const starTrail = useMemo(() => makeTrail(STAR_COUNT, [0.9, 0.94, 1.0]), [])
+  const dustTrail = useMemo(() => makeTrail(DUST_COUNT, [0.48, 0.58, 0.76]), [])
+
+  // Per-particle stellar colours (spectrum). Static buffers — no motion impact.
+  const starColors = useMemo(() => fillStarColors(STAR_COUNT), [])
+  const milkyColors = useMemo(() => fillStarColors(MILKY_COUNT), [])
 
   useEffect(() => {
-    return () => {
-      softDot.dispose()
-      spark.dispose()
-    }
-  }, [softDot, spark])
+    return () => sharpStar.dispose()
+  }, [sharpStar])
 
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
@@ -247,30 +261,58 @@ export function Starfield({ telemetry }: StarfieldProps) {
     delta: number,
     speedMul: number,
     applyLens: boolean,
+    endRush: number,
+    trail: TrailData | null,
+    line: THREE.LineSegments | null,
+    trailSeconds: number,
+    trailBright: number,
   ) => {
     if (!points) return
     const attr = points.geometry.attributes.position as THREE.BufferAttribute
     const arr = attr.array as Float32Array
     const lensR2 = F_LENS_R * F_LENS_R
+    const invDelta = delta > 0 ? 1 / delta : 0
     for (let i = 0; i < layer.z.length; i++) {
-      // Orbital drift (spirals in) — grows late, with a jolt at each stage pulse.
-      layer.angle[i] += layer.omega[i] * (1 + fi * 1.6 + d * 0.8 + pulse * 3) * delta
-      layer.z[i] += layer.speed[i] * (1 + d * speedMul + a * 8) * delta
-      if (layer.z[i] > camZ + 6) {
-        layer.z[i] -= DEPTH
+      // Orbital drift (spirals in) — grows late, with a jolt at each stage pulse
+      // and an explosive whirl in the final convergence. The endRush/absorb whirl
+      // is weighted per-star (swirlBias) so the vortex is uneven, not uniform.
+      const sB = layer.swirlBias[i]
+      layer.angle[i] +=
+        layer.omega[i] *
+        (1 + fi * 1.6 + d * 0.8 + pulse * 3 + (endRush * 8 + a * 12) * sB) *
+        delta
+      layer.z[i] += layer.speed[i] * (1 + d * speedMul + a * 8 + endRush * 4) * delta
+
+      // Gravitational inflow: the star's own orbit radius decays toward the
+      // centre (drained faster the deeper the fall and the closer it already is),
+      // and ferociously in the final ~15s — weighted per-star (inflowBias) so
+      // each is sucked in at its own rate for a chaotic cosmic-storm feel.
+      const closeness = 1 - THREE.MathUtils.clamp(layer.radius[i] / layer.maxR, 0, 1)
+      layer.radius[i] -=
+        INFLOW *
+        (fi + (a * 1.5 + endRush * 6) * layer.inflowBias[i]) *
+        (0.35 + closeness * 2.4) *
+        delta
+
+      // Recycle: swept behind the camera OR fully consumed by the hole.
+      if (layer.z[i] > camZ + 6 || layer.radius[i] < INFLOW_RESPAWN) {
+        if (layer.z[i] > camZ + 6) layer.z[i] -= DEPTH
         const [na, nr] = seedAngleRadius(layer.isBand[i] === 1, layer.maxR)
         layer.angle[i] = na
         layer.radius[i] = nr
       }
       const ahead = THREE.MathUtils.clamp((camZ - layer.z[i]) / DEPTH, 0, 1)
-      // Center attraction: funnel inward with distortion; absorb yanks harder;
-      // band particles curve toward the hole more as the fall deepens.
-      let r = layer.radius[i] * (1 - BEND * d * ahead) * (1 - 0.9 * a)
-      if (layer.isBand[i] === 1) r *= 1 - 0.25 * fi
-      // Spiral swirl: winding increases as particles near the centre (eased by
-      // a sync lock), so the inflow spirals rather than falling straight in.
+      // Center attraction: funnel inward with distortion; absorb yanks harder.
+      const r = layer.radius[i] * (1 - BEND * d * ahead) * (1 - 0.9 * a)
+      // Spiral swirl: winding increases sharply as particles near the centre
+      // (eased by a sync lock), so the inflow whirls into a vortex rather than
+      // falling straight in — the closer to the hole, the tighter the wind.
       const nearC = 1 - THREE.MathUtils.clamp(r / 40, 0, 1)
-      const ang = layer.angle[i] + (d + fi * 0.5) * nearC * 1.3 * lensState.calm
+      const ang =
+        layer.angle[i] +
+        (d + fi * 0.8 + (endRush * 3 + a * 4) * sB) *
+          (nearC * nearC * 2.4 + 0.2) *
+          lensState.calm
       let px = Math.cos(ang) * r
       // Slight vertical curvature so the field reads as a curved surface.
       let py =
@@ -293,11 +335,57 @@ export function Starfield({ telemetry }: StarfieldProps) {
           py = worldMouse.y + (dx * sn + dy * cs) * mag
         }
       }
+      const pz = layer.z[i]
       arr[i * 3] = px
       arr[i * 3 + 1] = py
-      arr[i * 3 + 2] = layer.z[i]
+      arr[i * 3 + 2] = pz
+
+      // Motion-blur trail: head at the current position, tail extrapolated back
+      // along the star's recent velocity (remembered from the previous frame).
+      if (trail) {
+        const pr = trail.prev
+        const h = i * 6
+        const t = h + 3
+        if (!trail.inited) {
+          pr[i * 3] = px
+          pr[i * 3 + 1] = py
+          pr[i * 3 + 2] = pz
+        }
+        const jx = px - pr[i * 3]
+        const jy = py - pr[i * 3 + 1]
+        const jz = pz - pr[i * 3 + 2]
+        // Per-second velocity → frame-rate-independent trail length.
+        const vx = jx * invDelta
+        const vy = jy * invDelta
+        const vz = jz * invDelta
+        // A respawn teleports the point; suppress the trail that frame.
+        const ts = jx * jx + jy * jy + jz * jz > TRAIL_JUMP2 ? 0 : trailSeconds
+        const tp = trail.positions
+        const tc = trail.colors
+        tp[h] = px
+        tp[h + 1] = py
+        tp[h + 2] = pz
+        tp[t] = px - vx * ts
+        tp[t + 1] = py - vy * ts
+        tp[t + 2] = pz - vz * ts
+        const b = ts > 0 ? trailBright : 0
+        tc[h] = trail.tint[0] * b
+        tc[h + 1] = trail.tint[1] * b
+        tc[h + 2] = trail.tint[2] * b
+        tc[t] = 0
+        tc[t + 1] = 0
+        tc[t + 2] = 0
+        pr[i * 3] = px
+        pr[i * 3 + 1] = py
+        pr[i * 3 + 2] = pz
+      }
     }
     attr.needsUpdate = true
+    if (trail && line) {
+      ;(line.geometry.attributes.position as THREE.BufferAttribute).needsUpdate = true
+      ;(line.geometry.attributes.color as THREE.BufferAttribute).needsUpdate = true
+      trail.inited = true
+    }
   }
 
   useFrame((_, delta) => {
@@ -306,12 +394,12 @@ export function Starfield({ telemetry }: StarfieldProps) {
     const d = tel.distortionFactor
     const a = tel.absorb // 0→1 during the singularity
     const fi = tel.fallIntensity // eased 0→1 over the fall
+    const fp = tel.fallProgress // linear 0→1 over the fall
     const pulse = tel.spacetimePulse // brief surge at each 30s boundary
     const calm = 1 - tel.syncEase * 0.4 // a sync lock eases the swirl/lens
     const camZ = camera.position.z
-    const time = tel.simTime
 
-    // Cursor well (relaxes fast when the mouse stops); shared by dust + foreground.
+    // Cursor well (relaxes fast when the mouse stops); used by the mid dust.
     mouse.velocity *= 0.85
     mouse.influence *= 0.86
     const planeZ = camZ - F_LENS_PLANE
@@ -322,10 +410,20 @@ export function Starfield({ telemetry }: StarfieldProps) {
     const lensStrength =
       Math.min(F_LENS_BASE * mouse.influence * (1 + mouse.velocity * F_LENS_VEL), F_LENS_MAX) *
       calm
-    const lensR2 = F_LENS_R * F_LENS_R
     lensState.strength = lensStrength
     lensState.planeZ = planeZ
     lensState.calm = calm
+
+    // endRush: 0 until the final ~15s (inverse of the horizon dissolve), then
+    // ramps to 1 as the sphere melts away — the trigger for the explosive
+    // convergence of all starlight into the vanishing point.
+    const endRush = 1 - tel.horizonFade
+
+    // Trail envelope: off until the 60s mark, then ramps in and lengthens toward
+    // the end, exploding in the final convergence — organic 1px suction tails.
+    const trailAmt = THREE.MathUtils.clamp((fp - TRAIL_START) / TRAIL_RAMP, 0, 1)
+    const trailSeconds = trailAmt * (0.05 + fp * 0.12 + a * 0.25 + endRush * 0.4)
+    const trailBright = trailAmt * (0.7 + endRush * 0.4)
 
     // Milky band ribbon — streams past, curves toward the hole late in the fall.
     const bmesh = milkyRef.current
@@ -335,18 +433,21 @@ export function Starfield({ telemetry }: StarfieldProps) {
       const ct = Math.cos(BAND_TILT)
       const st = Math.sin(BAND_TILT)
       for (let i = 0; i < MILKY_COUNT; i++) {
-        milky.z[i] += milky.speed[i] * (1 + d * 2 + a * 8) * delta
+        milky.z[i] += milky.speed[i] * (1 + d * 2 + a * 8 + endRush * 4) * delta
         if (milky.z[i] > camZ + 6) {
           milky.z[i] -= DEPTH
           seedBand(milky.base, i, ct, st)
         }
         const ahead = THREE.MathUtils.clamp((camZ - milky.z[i]) / DEPTH, 0, 1)
-        const pull = THREE.MathUtils.clamp((BEND * d + fi * 0.35) * ahead, 0, 0.9)
+        const pull = THREE.MathUtils.clamp((BEND * d + fi * 0.35 + endRush * 0.8) * ahead, 0, 0.95)
         const bx = milky.base[i * 2] * (1 - pull)
         const by = milky.base[i * 2 + 1] * (1 - pull)
         const rr = Math.hypot(bx, by)
         const nearC = 1 - THREE.MathUtils.clamp(rr / 45, 0, 1)
-        const sw = (d + fi * 0.5) * nearC * 1.5 * calm
+        // Wind the ribbon tightly around the horizon as it passes behind — the
+        // band curls into the Einstein ring, then whirls violently into the
+        // vanishing point during the final convergence.
+        const sw = (d + fi * 0.8 + endRush * 3 + a * 4) * (nearC * nearC * 2.2 + 0.2) * calm
         const cs = Math.cos(sw)
         const sn = Math.sin(sw)
         arr[i * 3] = bx * cs - by * sn
@@ -356,145 +457,86 @@ export function Starfield({ telemetry }: StarfieldProps) {
       attr.needsUpdate = true
     }
 
-    updatePoints(stars, starsRef.current, camZ, d, a, fi, pulse, delta, 2.2, false)
-    updatePoints(dust, dustRef.current, camZ, d, a, fi, pulse, delta, 2.0, true)
+    updatePoints(
+      stars, starsRef.current, camZ, d, a, fi, pulse, delta, 2.2, false, endRush,
+      starTrail, starTrailRef.current, trailSeconds, trailBright,
+    )
+    updatePoints(
+      dust, dustRef.current, camZ, d, a, fi, pulse, delta, 2.0, true, endRush,
+      dustTrail, dustTrailRef.current, trailSeconds, trailBright * 0.7,
+    )
 
-    // Sync bloom: brighten the starlight toward cyan when locked.
-    const syncTarget = telemetry.current.isSynced ? 1 : 0
+    // Sync bloom: brighten the starlight when locked.
+    const syncTarget = tel.isSynced ? 1 : 0
     syncGlow.current += (syncTarget - syncGlow.current) * 0.08
     const sg = syncGlow.current
     const starMat = starsRef.current?.material as THREE.PointsMaterial | undefined
-    if (starMat) starMat.opacity = 0.52 + sg * 0.35
-    const streakMat = streaksRef.current?.material as
-      | THREE.MeshBasicMaterial
-      | undefined
-    if (streakMat) streakMat.opacity = 0.26 + sg * 0.3
-
-    // Foreground: small fast dust + thin streaks. Depth drives everything, but
-    // the width stays tiny and capped so nothing looks like a sphere/blob.
-    const fmesh = foreRef.current
-    if (fmesh) {
-      const jp = telemetry.current.journeyProgress
-      const { isStreak, width, baseLen, phase, tint } = foreTraits
-      for (let i = 0; i < FORE_COUNT; i++) {
-        fore.angle[i] += fore.omega[i] * (1 + fi * 1.6 + d * 0.8 + pulse * 3) * delta
-        fore.z[i] += fore.speed[i] * (1 + d * 3.4 + a * 8) * delta
-        if (fore.z[i] > camZ + 6) {
-          fore.z[i] -= DEPTH
-          fore.angle[i] = Math.random() * Math.PI * 2
-          fore.radius[i] = 8 + Math.random() * fore.maxR
-        }
-        const ahead = THREE.MathUtils.clamp((camZ - fore.z[i]) / DEPTH, 0, 1)
-        const near = 1 - ahead
-        const r = fore.radius[i] * (1 - BEND * d * ahead) * (1 - 0.9 * a)
-        const ang = fore.angle[i]
-
-        // Width: only a slight parallax growth, hard-capped very small.
-        const w = Math.min(width[i] * (0.75 + near * 0.5), 0.5)
-        // Length: dust round (≈w); streaks grow with journey/intensity/absorb.
-        const streakLen =
-          baseLen[i] * (0.8 + near * 0.5) * (1 + jp * 0.7 + d * ahead * 4.5 + fi * ahead * 1.4)
-        const len = (isStreak[i] ? streakLen : w) + a * a * 22
-
-        // Local cursor lens: nudge foreground particles around the well.
-        let fx = Math.cos(ang) * r
-        let fy = Math.sin(ang) * r
-        if (lensStrength > 0.001) {
-          const dx = fx - worldMouse.x
-          const dy = fy - worldMouse.y
-          const dist2 = dx * dx + dy * dy
-          if (dist2 < lensR2) {
-            const infl =
-              (1 - Math.sqrt(dist2) / F_LENS_R) *
-              THREE.MathUtils.clamp(1 - Math.abs(fore.z[i] - planeZ) / 200, 0, 1) *
-              lensStrength
-            const cs = Math.cos(infl * F_LENS_CURL)
-            const sn = Math.sin(infl * F_LENS_CURL)
-            const mag = 1 + infl * F_LENS_PUSH
-            fx = worldMouse.x + (dx * cs - dy * sn) * mag
-            fy = worldMouse.y + (dx * sn + dy * cs) * mag
-          }
-        }
-        dummy.position.set(fx, fy, fore.z[i])
-        dummy.rotation.set(0, 0, ang + Math.PI / 2)
-        dummy.scale.set(w, len, 1)
-        dummy.updateMatrix()
-        fmesh.setMatrixAt(i, dummy.matrix)
-
-        // Opacity as a depth bell: fades in from afar, fades out at the camera;
-        // a faint flicker grows a little with distortion. Kept dim overall.
-        const fadeIn = 1 - THREE.MathUtils.smoothstep(ahead, 0.72, 1.0)
-        const fadeOut = THREE.MathUtils.smoothstep(ahead, 0.0, 0.07)
-        const flicker = 1 - (0.1 + d * 0.2) * (0.5 + 0.5 * Math.sin(time * 3 + phase[i]))
-        // Particles pulled to the centre brighten just before being swallowed.
-        const nearHole = 1 - THREE.MathUtils.clamp(r / 28, 0, 1)
-        const bright = 0.3 * fadeIn * fadeOut * flicker * (1 + nearHole * (0.4 + d) * 1.4)
-        color.setRGB(
-          tint[i * 3] * bright,
-          tint[i * 3 + 1] * bright,
-          tint[i * 3 + 2] * bright,
-        )
-        fmesh.setColorAt(i, color)
-      }
-      fmesh.instanceMatrix.needsUpdate = true
-      if (fmesh.instanceColor) fmesh.instanceColor.needsUpdate = true
-    }
-
-    // Light streaks: stretch longer and bend inward near the hole.
-    const smesh = streaksRef.current
-    if (smesh) {
-      for (let i = 0; i < STREAK_COUNT; i++) {
-        streaks.angle[i] += streaks.omega[i] * (1 + fi * 1.6 + d * 0.8 + pulse * 3) * delta
-        streaks.z[i] += streaks.speed[i] * (1 + d * 2.8 + a * 8) * delta
-        if (streaks.z[i] > camZ + 6) {
-          streaks.z[i] -= DEPTH
-          streaks.angle[i] = Math.random() * Math.PI * 2
-          streaks.radius[i] = 8 + Math.random() * streaks.maxR
-        }
-        const ahead = THREE.MathUtils.clamp((camZ - streaks.z[i]) / DEPTH, 0, 1)
-        const r = streaks.radius[i] * (1 - BEND * d * ahead) * (1 - 0.9 * a)
-        const ang = streaks.angle[i]
-        const len = 3 + d * ahead * 44 + fi * ahead * 20 + a * a * 60
-        dummy.position.set(Math.cos(ang) * r, Math.sin(ang) * r, streaks.z[i])
-        dummy.rotation.set(0, 0, ang + Math.PI / 2)
-        dummy.scale.set(0.3, len, 1)
-        dummy.updateMatrix()
-        smesh.setMatrixAt(i, dummy.matrix)
-      }
-      smesh.instanceMatrix.needsUpdate = true
-    }
+    if (starMat) starMat.opacity = 0.78 + sg * 0.22
   })
 
   return (
     <>
-      {/* Galactic band ribbon — a bit brighter/denser but opacity-limited. */}
+      {/* Galactic band ribbon — fine points, opacity-limited. */}
       <points ref={milkyRef}>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" args={[milky.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[milkyColors, 3]} />
         </bufferGeometry>
         <pointsMaterial
-          map={softDot}
-          color="#cdd8ee"
-          size={1.3}
-          sizeAttenuation
+          map={sharpStar}
+          vertexColors
+          color="#ffffff"
+          size={1.6}
+          sizeAttenuation={false}
           transparent
-          opacity={0.5}
+          opacity={0.72}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </points>
 
+      {/* Motion-blur trails (1px lines) — under the point heads. */}
+      <lineSegments ref={dustTrailRef}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[dustTrail.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[dustTrail.colors, 3]} />
+        </bufferGeometry>
+        <lineBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.5}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </lineSegments>
+
+      <lineSegments ref={starTrailRef}>
+        <bufferGeometry>
+          <bufferAttribute attach="attributes-position" args={[starTrail.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[starTrail.colors, 3]} />
+        </bufferGeometry>
+        <lineBasicMaterial
+          vertexColors
+          transparent
+          opacity={0.85}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+        />
+      </lineSegments>
+
       <points ref={starsRef}>
         <bufferGeometry>
           <bufferAttribute attach="attributes-position" args={[stars.positions, 3]} />
+          <bufferAttribute attach="attributes-color" args={[starColors, 3]} />
         </bufferGeometry>
         <pointsMaterial
-          map={softDot}
-          color="#b6cde8"
-          size={1.0}
-          sizeAttenuation
+          map={sharpStar}
+          vertexColors
+          color="#ffffff"
+          size={1.8}
+          sizeAttenuation={false}
           transparent
-          opacity={0.52}
+          opacity={0.8}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
@@ -505,47 +547,16 @@ export function Starfield({ telemetry }: StarfieldProps) {
           <bufferAttribute attach="attributes-position" args={[dust.positions, 3]} />
         </bufferGeometry>
         <pointsMaterial
-          map={softDot}
-          color="#7488a4"
-          size={0.42}
-          sizeAttenuation
+          map={sharpStar}
+          color="#8fa0bd"
+          size={1.1}
+          sizeAttenuation={false}
           transparent
-          opacity={0.2}
+          opacity={0.32}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
         />
       </points>
-
-      <instancedMesh
-        ref={foreRef}
-        args={[undefined, undefined, FORE_COUNT]}
-        frustumCulled={false}
-      >
-        <planeGeometry args={[1, 1]} />
-        <meshBasicMaterial
-          map={spark}
-          transparent
-          opacity={1}
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-        />
-      </instancedMesh>
-
-      <instancedMesh
-        ref={streaksRef}
-        args={[undefined, undefined, STREAK_COUNT]}
-        frustumCulled={false}
-      >
-        <planeGeometry args={[1, 1]} />
-        <meshBasicMaterial
-          map={softDot}
-          color="#cfe0ff"
-          transparent
-          opacity={0.26}
-          depthWrite={false}
-          blending={THREE.AdditiveBlending}
-        />
-      </instancedMesh>
     </>
   )
 }

@@ -5,6 +5,7 @@ import { Starfield } from './Starfield'
 import { BlackHole } from './BlackHole'
 import { SyncMarker } from './SyncMarker'
 import { LensPass } from './LensPass'
+import { NebulaBackdrop } from './NebulaBackdrop'
 import { WhiteholeScene } from './WhiteholeScene'
 import type { AudioEngine } from '../audio/AudioEngine'
 import type { Telemetry, Phase } from '../telemetry'
@@ -27,8 +28,8 @@ const SHIP_SLOWDOWN = 0.94 // ship proper-time slowdown fraction at the horizon
 
 // Ending sequence timing (seconds, all sim-time so pause freezes them).
 const FALL_TO_SING = 120 // fall for at least 120s before the singularity
-const SING_DURATION = 2.4 // absorb ramp
-const BLACKOUT = 0.5 // short black hold after the screen is swallowed
+const SING_DURATION = 0.7 // final convergence: stars snap into the vanishing point
+const BLACKOUT = 0.5 // full black hold once everything is swallowed
 const WHITE_RUSH = 2.6 // whitehole dash length
 
 /**
@@ -67,15 +68,13 @@ function PhaseController({
     } else if (st.phase === 'singularity') {
       st.singT += delta
       const t = st.singT
-      // absorb: cubic ease-in 0→1 (screen-eating pull).
+      // absorb: cubic ease-in 0→1 — the final, explosive convergence of all
+      // remaining starlight into the (now invisible) centre.
       const a = Math.min(t / SING_DURATION, 1)
       tel.absorb = a * a * a
-      // blackout ramps in over the last 0.4s of the absorb, then holds.
-      tel.blackout = THREE.MathUtils.clamp(
-        (t - (SING_DURATION - 0.4)) / 0.4,
-        0,
-        1,
-      )
+      // blackout rises as the convergence completes → the screen reaches pure
+      // black exactly as the last light is swallowed, then holds for BLACKOUT.
+      tel.blackout = THREE.MathUtils.smoothstep(t, SING_DURATION * 0.55, SING_DURATION)
       if (t >= SING_DURATION + BLACKOUT) {
         st.phase = 'whitehole'
         st.whiteT = 0
@@ -175,7 +174,13 @@ function CameraRig({ engine, active, telemetry }: CameraRigProps) {
     // over time rather than linearly (calm early, tense late).
     const fallProgress = THREE.MathUtils.clamp(elapsed / 120, 0, 1)
     const fallIntensity = Math.pow(fallProgress, 1.6)
+    tel.fallProgress = fallProgress
     tel.fallIntensity = fallIntensity
+    // Horizon dissolve: over the final ~15s (fallProgress 0.875→0.99) the black
+    // event-horizon sphere fades out (1→0). Instead of growing the mesh to
+    // swallow the frame, the sphere melts into the natural dark while the star
+    // field converges — the "spacetime cross-fade" pass-through.
+    tel.horizonFade = 1 - THREE.MathUtils.clamp((fallProgress - 0.875) / 0.115, 0, 1)
 
     // Stage events every 30s: a short pulse surges at each 30/60/90s boundary.
     const fallStage = Math.min(Math.floor(elapsed / 30), 3)
@@ -205,8 +210,13 @@ function CameraRig({ engine, active, telemetry }: CameraRigProps) {
       distanceToBlackHole,
     )
     // Look toward a tangent-offset point (not dead-centre), so the hole slides
-    // near the middle as the camera swings around it.
-    const tanOff = (0.06 + 0.06 * fallIntensity) * distanceToBlackHole * calm
+    // gently near the middle as the camera swings around it. The offset is kept
+    // small AND hard-capped in absolute world units, so the hole only *drifts*
+    // near centre and can never slide out of frame during the orbital descent.
+    const tanOff = Math.min(
+      (0.02 + 0.025 * fallIntensity) * distanceToBlackHole * calm,
+      6 + fallIntensity * 4,
+    )
     LOOK_TARGET.set(
       -Math.sin(orbitAngle) * tanOff,
       Math.cos(orbitAngle) * tanOff * 0.4,
@@ -264,8 +274,8 @@ export function Scene({
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       style={{ position: 'absolute', inset: 0 }}
     >
-      {!inWhitehole && <color attach="background" args={['#000104']} />}
-      {!inWhitehole && <fog attach="fog" args={['#000104', 110, 620]} />}
+      {!inWhitehole && <color attach="background" args={['#02030a']} />}
+      {!inWhitehole && <fog attach="fog" args={['#02030a', 110, 620]} />}
       <SimClock telemetry={telemetry} />
       <PhaseController
         telemetry={telemetry}
@@ -276,6 +286,7 @@ export function Scene({
 
       {!inWhitehole && (
         <>
+          <NebulaBackdrop />
           <Starfield telemetry={telemetry} />
           <BlackHole telemetry={telemetry} />
           <SyncMarker telemetry={telemetry} />

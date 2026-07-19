@@ -47,6 +47,7 @@
 }
 
 .intro {
+  position: relative; /* positioning context for the dead-centre hero */
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -54,59 +55,49 @@
   padding: 7vh 24px 5vh;
 }
 
-/* ---- Hero title ---------------------------------------------------------- */
+/* ---- Hero: sub-copy above a dead-centre title --------------------------- */
+/* The hero itself is just a flex spacer that pushes the console to the bottom;
+   the title and body are absolutely positioned relative to .intro so the title
+   lands on the exact viewport centre regardless of the console's height. */
 .intro-hero {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  text-align: center;
 }
 
 .intro-title {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 50%;
   margin: 0;
-  /* Huge, thin, cold typography — it dominates by scale, not by glow. */
-  font-size: clamp(62px, 17vw, 240px);
-  font-weight: 300;
-  line-height: 0.9;
-  letter-spacing: 0.012em;
-  color: #eef4ff;
-  /* Stretched vertically for a tall, elegant proportion. */
-  transform: scaleY(1.24);
+  line-height: 0;
+  /* Title image, pinned to the exact centre of the screen, spanning 70% of the
+     viewport width. Aspect ratio is preserved via the img's height:auto. */
+  width: 70vw;
+  transform: translate(-50%, -50%);
   transform-origin: center;
-  /* Only the faintest edge definition — no glowing sign. */
-  text-shadow: 0 0 2px rgba(200, 220, 255, 0.14);
+}
+.intro-title img {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
-.intro-warning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 6px 0 0;
-  font-size: 12px;
-  letter-spacing: 1.5px;
-  color: var(--amber);
-  opacity: 0.85;
-}
-.warn-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--warn);
-  box-shadow: 0 0 10px var(--warn);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.25;
-  }
+/* Existential body copy — one step smaller, pinned in the space ABOVE the title.
+   Its bottom edge sits 18vh above the centre line — clear of the 70vw title's
+   half-height (~15vh on 16:9) so the two don't overlap on common displays. */
+.intro-body {
+  position: absolute;
+  left: 50%;
+  bottom: calc(50% + 18vh);
+  transform: translateX(-50%);
+  width: min(600px, 88vw);
+  margin: 0;
+  text-align: center;
+  font-size: clamp(12px, 1.3vw, 16px);
+  font-weight: 300;
+  line-height: 1.9;
+  letter-spacing: 0.02em;
+  color: rgba(208, 220, 238, 0.8);
+  text-wrap: balance;
 }
 
 /* ---- Slim entry console -------------------------------------------------- */

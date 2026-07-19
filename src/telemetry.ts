@@ -12,6 +12,7 @@ export type Phase = 'intro' | 'falling' | 'singularity' | 'whitehole'
 export interface Telemetry {
   distortionFactor: number // 0 far away → 1 at the event horizon
   journeyProgress: number // 0→1 over the whole fall
+  fallProgress: number // linear 0→1 over the 120s fall (raw, un-eased)
   fallIntensity: number // eased 0→1 over the 120s fall (spacetime pressure)
   fallStage: number // 0..3 — which 30s band of the fall we're in
   spacetimePulse: number // brief 0→1 surge at each 30s stage boundary
@@ -31,6 +32,7 @@ export interface Telemetry {
 
   // Ending sequence (stage 5).
   phase: Phase // current ending phase
+  horizonFade: number // 1→0 as the event-horizon sphere dissolves in the last ~15s
   absorb: number // 0→1 singularity pull (screen-eating)
   blackout: number // 0→1 black overlay opacity
   whiteFlash: number // 0→1 white overlay opacity
@@ -41,6 +43,7 @@ export function createTelemetry(): Telemetry {
   return {
     distortionFactor: 0,
     journeyProgress: 0,
+    fallProgress: 0,
     fallIntensity: 0,
     fallStage: 0,
     spacetimePulse: 0,
@@ -54,6 +57,7 @@ export function createTelemetry(): Telemetry {
     simulationPaused: false,
     simTime: 0,
     phase: 'intro',
+    horizonFade: 1,
     absorb: 0,
     blackout: 0,
     whiteFlash: 0,

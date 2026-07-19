@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { extractVideoId } from '../audio/youtube'
+import titleImage from '../assets/event-horizon_title.png'
 
 export type IntroSource =
   | { mode: 'youtube'; videoId: string }
@@ -59,15 +60,18 @@ export function IntroPanel({ onEnter }: IntroPanelProps) {
 
   return (
     <div className="intro">
-      {/* Hero title — the screen's subject, dissolving into space. */}
+      {/* Hero — sub-copy pinned above a dead-centre title. */}
       <div className="intro-hero">
-        <h1 className="intro-title" data-text="EVENT HORIZON">
-          EVENT HORIZON
-        </h1>
-        <p className="intro-warning">
-          <span className="warn-dot" />
-          우주선 오디오 시스템 동기화 필요
+        <p className="intro-body">
+          우리는 소멸을 거스를 수 없다.
+          <br />
+          그러나 소멸을 향한 여정은 가장 격렬한 삶의 증거가 된다.
+          <br />
+          지금, 당신의 가장 뜨거운 순간을 온전히 감각하십시오.
         </p>
+        <h1 className="intro-title">
+          <img src={titleImage} alt="EVENT HORIZON" />
+        </h1>
       </div>
 
       {/* Slim entry console at the bottom — inputs kept, but understated. */}
